@@ -44,8 +44,14 @@ def get_unique_filepath(directory, filename):
 
 
 def build_output_filename(url):
-    filename = os.path.basename(urlparse(url).path)
+    path = urlparse(url).path
+    filename = os.path.basename(path)
     name_only, _ext = os.path.splitext(filename)
+
+    if name_only in ["master", "index", "playlist"] and _ext == ".m3u8":
+        parts = path.strip("/").split("/")
+        if len(parts) >= 2:
+            name_only = parts[-2]
 
     if not name_only:
         name_only = "video"
