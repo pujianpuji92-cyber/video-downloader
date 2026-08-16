@@ -4,6 +4,7 @@ import subprocess
 import shutil
 import requests
 from urllib.parse import urlparse
+import time
 
 DOWNLOAD_DIR = "downloads"
 BULK_FILE = "bulk.txt"
@@ -112,38 +113,80 @@ def download_hls(url, filepath):
 def download_direct(url, filepath):
     print(f"\nDownloading: {os.path.basename(filepath)}")
 
-    try:
-        with requests.get(url, headers=HEADERS, stream=True) as r:
-            r.raise_for_status()
-
-            total_size = int(r.headers.get("content-length", 0))
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
             downloaded = 0
-            chunk_size = 8192
+            file_mode = "wb"
+            headers = HEADERS.copy()
 
-            with open(filepath, "wb") as f:
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
+            if os.path.exists(filepath):
+                downloaded = os.path.getsize(filepath)
+                if downloaded > 0:
+                    file_mode = "ab"
+                    headers["Range"] = f"bytes={downloaded}-"
+                    print(f"Resuming from {downloaded} bytes...")
 
-                        if total_size > 0:
-                            percent = downloaded * 100 / total_size
-                            bar_length = 30
-                            filled = int(bar_length * downloaded / total_size)
-                            bar = "█" * filled + "-" * (bar_length - filled)
+            with requests.get(url, headers=headers, stream=True) as r:
+                if r.status_code == 416:  # Range Not Satisfiable (already downloaded)
+                    print("File is already fully downloaded.")
+                    return True
 
-                            print(
-                                f"\r[{bar}] {percent:5.1f}% ({downloaded}/{total_size} bytes)",
-                                end="",
-                                flush=True,
-                            )
+                r.raise_for_status()
 
-        print()
-        return True
+                # If we asked for a range but server returned 200, it doesn't support resume.
+                if downloaded > 0 and r.status_code == 200:
+                    print("Server does not support resuming. Restarting download...")
+                    file_mode = "wb"
+                    downloaded = 0
 
-    except Exception as e:
-        print("\nError:", e)
-        return False
+                content_length = r.headers.get("content-length")
+                content_range = r.headers.get("content-range")
+
+                if content_range:
+                    total_size = int(content_range.split('/')[-1])
+                elif content_length:
+                    total_size = int(content_length) + downloaded
+                else:
+                    total_size = 0
+
+                if total_size > 0 and downloaded >= total_size:
+                    print("File is already fully downloaded.")
+                    return True
+
+                chunk_size = 8192
+
+                with open(filepath, file_mode) as f:
+                    for chunk in r.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+
+                            if total_size > 0:
+                                percent = downloaded * 100 / total_size
+                                bar_length = 30
+                                filled = int(bar_length * downloaded / total_size)
+                                bar = "█" * filled + "-" * (bar_length - filled)
+
+                                print(
+                                    f"\r[{bar}] {percent:5.1f}% ({downloaded}/{total_size} bytes)",
+                                    end="",
+                                    flush=True,
+                                )
+
+            print()
+            return True
+
+        except requests.exceptions.RequestException as e:
+            print(f"\nError: {e}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in 3 seconds... (Attempt {attempt + 2}/{max_retries})")
+                time.sleep(3)
+            else:
+                return False
+        except Exception as e:
+            print("\nError:", e)
+            return False
 
 
 def download_file(url):
